@@ -1,0 +1,12 @@
+{
+	"id": "xfdf-importer",
+	"name": "XFDF Importer",
+	"version": "0.1",
+	"minAppVersion": "0.15.0",
+	"description": "从XFDF导入PDF注释到MarkDown私人定制版",
+	"author": "XieHuiHui",
+	"authorUrl": "https://your-website.com",
+	"fundingUrl": "https://your-funding-url.com",
+	"isDesktopOnly": false 
+}
+
