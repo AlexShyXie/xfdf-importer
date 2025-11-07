@@ -220,7 +220,7 @@ export default class XFDFImporterPlugin extends Plugin {
 				const pxceLink = this.generatePxceLink(file, pageNum, uniqueId);
 
 				// 生成 Obsidian 链接
-				const obsidianLink = `${type}: ${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pxceLink}) [tag:: ]`;
+				const obsidianLink = `${type}: ${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pxceLink})`;
 
 				return {
 					uniqueId,
@@ -287,10 +287,10 @@ export default class XFDFImporterPlugin extends Plugin {
 						if (newAnnotation) {
 							// 1. 提取新旧两行中的“核心链接部分”
 							// 使用正则表达式匹配 `- [任何内容](任何链接) <!-- ID -->` 的结构
-							const coreLinkRegex = /^- \[.*?\]\(.*?\) <!--\s*.+?\s*-->/;
+							const coreLinkRegex = /^- \[.*?\]\(.*?\) <!--\s*.+?\s*-->\s*(\[tag::.*?\])?$/;
 							
 							const oldCoreLink = peekLine.match(coreLinkRegex)?.[0] || "";
-							const newCoreLink = `- ${newAnnotation.obsidianLink} <!--${newAnnotation.uniqueId} -->`;
+							const newCoreLink = `- ${newAnnotation.obsidianLink} <!--${newAnnotation.uniqueId} -->[tag:: ]`;
 
 							// 2. 比较核心部分是否一致
 							if (oldCoreLink === newCoreLink) {
@@ -320,7 +320,7 @@ export default class XFDFImporterPlugin extends Plugin {
 
 				for (const newAnnot of newAnnotationsForTitle) {
 					if (!processedIds.has(newAnnot.uniqueId)) {
-						finalContentLines.push(`- ${newAnnot.obsidianLink} <!-- ${newAnnot.uniqueId} -->`);
+						finalContentLines.push(`- ${newAnnot.obsidianLink} <!-- ${newAnnot.uniqueId} -->[tag:: ]`);
 					}
 				}
 
@@ -340,7 +340,7 @@ export default class XFDFImporterPlugin extends Plugin {
 			for (const docTitle of orphanTitles) {
 				finalContentLines.push(`\n# ${docTitle}\n`);
 				const newAnnotationLines = allNewAnnotations[docTitle].map(annot => 
-					`- ${annot.obsidianLink} <!-- ${annot.uniqueId} -->`
+					`- ${annot.obsidianLink} <!-- ${annot.uniqueId} -->[tag:: ]`
 				);
 				finalContentLines.push(...newAnnotationLines);
 			}
