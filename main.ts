@@ -73,20 +73,21 @@ export default class XFDFImporterPlugin extends Plugin {
 		return encodeURIComponent(unixPath);
 	}
 
-	// 3. 【核心移植】生成 pxce 链接 (使用 comment ID)
-	generatePxceLink(xfdfFileName: string, pageNum: number, commentId: string): string {
-		const xfdfVaultPath = `${this.settings.xfdfFolder}/${xfdfFileName}`;
-		
+	// 修改 generatePxceLink 函数，接收 TFile 对象而不是文件名
+	generatePxceLink(xfdfFile: TFile, pageNum: number, commentId: string): string {
 		const adapter = this.app.vault.adapter;
 		if (!(adapter instanceof FileSystemAdapter)) {
 			new Notice("Error: Cannot generate link, vault is not a local file system.");
 			return "";
 		}
+		
+		// 直接从 xfdfFile 对象获取库内路径
+		const xfdfVaultPath = xfdfFile.path;
 		const vaultPath = adapter.getBasePath();
 		const xfdfAbsolutePath = `${vaultPath}\\${xfdfVaultPath.replace(/\//g, '\\')}`;
 		const encodedXfdfPath = this.convertToFullyEncodedUnixPathXFDF(xfdfAbsolutePath);
 
-		// 【关键】使用 comment ID 直接定位，不再需要坐标
+		// 使用 comment ID 直接定位
 		const pxceLink = `pxce:file:///${encodedXfdfPath}#page=${pageNum};view=FitH;comment=${commentId}`;
 		
 		return pxceLink;
@@ -350,13 +351,13 @@ export default class XFDFImporterPlugin extends Plugin {
 				const pageNum = (page ? parseInt(page, 10) : 1);
 
 				// 生成 pxce 链接
-				const pxceLink = this.generatePxceLink(fileName, pageNum, uniqueId);
+				const pxceLink = this.generatePxceLink(file, pageNum, uniqueId);
 
 				// 异步生成PDF内部链接
 				const pdfInternalLink = await this.generatePdfInternalLink(file, pageNum, rect, color);
 
 				// 生成 Obsidian 链接，包含两个链接
-				const obsidianLink = `${type}:${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pdfInternalLink}) [pxceLink](${pxceLink})`;
+				const obsidianLink = `${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pdfInternalLink}) [pxceLink](${pxceLink}) ${type}`;
 
 				return {
 					uniqueId,
@@ -478,7 +479,7 @@ export default class XFDFImporterPlugin extends Plugin {
 		if (orphanTitles.length > 0) {
 			finalContentLines.push('\n\n---\n');
 			for (const docTitle of orphanTitles) {
-				finalContentLines.push(`\n# ${docTitle}\n`);
+				finalContentLines.push(`\n## ${docTitle}\n`);
 				const newAnnotationLines = allNewAnnotations[docTitle].map(annot => 
 					`- ${annot.obsidianLink} <!-- ${annot.uniqueId} -->[tag:: ]`
 				);
