@@ -2,13 +2,15 @@ import { App, Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, FileSys
 import { DOMParser } from 'xmldom';
 
 interface XFDFImporterSettings {
-	xfdfFolder: string;
-	targetFile: string;
+    xfdfFolder: string;
+    targetFile: string;
+    headerLevel: number; // 新增：自动插入的标题层级
 }
 
 const DEFAULT_SETTINGS: XFDFImporterSettings = {
-	xfdfFolder: 'PDFxchangeAnnot',
-	targetFile: 'PDFxchangeAnnot/PXCEAnnotation.md'
+    xfdfFolder: '16_PDFxchangeAnnot',
+    targetFile: '11_影像学习/书籍pdfAnnotation.md',
+    headerLevel: 2 // 默认2级标题
 }
 
 export default class XFDFImporterPlugin extends Plugin {
@@ -328,7 +330,7 @@ export default class XFDFImporterPlugin extends Plugin {
 			return;
 		}
 		// 使用新的递归搜索方法
-    	const xfdfFiles = await this.findXfdfFiles(xfdfFolderAbstractFile);
+		const xfdfFiles = await this.findXfdfFiles(xfdfFolderAbstractFile);
 
 		for (const file of xfdfFiles) {
 			// file 现在是 TFile 对象，不需要再次获取
@@ -357,7 +359,7 @@ export default class XFDFImporterPlugin extends Plugin {
 				const pdfInternalLink = await this.generatePdfInternalLink(file, pageNum, rect, color);
 
 				// 生成 Obsidian 链接，包含两个链接
-				const obsidianLink = `${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pdfInternalLink}) [pxceLink](${pxceLink}) ${type}`;
+				const obsidianLink = `${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pdfInternalLink}) [pxceLink](${pxceLink})`;
 
 				return {
 					uniqueId,
@@ -375,7 +377,6 @@ export default class XFDFImporterPlugin extends Plugin {
 			// 等待所有异步操作完成
 			const annotations = await Promise.all(annotationPromises);
 
-
 			// 存储到 allNewAnnotations
 			if (!allNewAnnotations[docTitle]) {
 				allNewAnnotations[docTitle] = [];
@@ -383,6 +384,10 @@ export default class XFDFImporterPlugin extends Plugin {
 			allNewAnnotations[docTitle].push(...annotations);
 		}
 
+		// 【新增】统计变量
+		let totalNewAnnotations = 0;
+		let totalUpdatedAnnotations = 0;
+		let totalSkippedAnnotations = 0;
 
 		// 3. 【核心新逻辑】重建文件内容，智能保留用户修改
 		const finalContentLines: string[] = [];
@@ -395,14 +400,21 @@ export default class XFDFImporterPlugin extends Plugin {
 			return match ? match[1] : null;
 		};
 
+		// 新增：专门检测2级标题的函数
+		const isH2Title = (line: string): string | null => {
+			const trimmedLine = line.trim();
+			const h2Match = trimmedLine.match(/^##\s+(.*)/);
+			return h2Match ? h2Match[1] : null;
+		};
+
 		while (currentLineIndex < originalLines.length) {
 			const line = originalLines[currentLineIndex];
 			const trimmedLine = line.trim();
 
-			// 检查是否是一个标题行
-			const titleMatch = trimmedLine.match(/^(#+)\s+(.*)/);
-			if (titleMatch) {
-				const titleText = titleMatch[2];
+			// 检查是否是2级标题（这是我们关心的）
+			const h2Title = isH2Title(line);
+			if (h2Title) {
+				const titleText = h2Title;
 				processedTitles.add(titleText);
 
 				// 将标题行加入最终内容
@@ -413,43 +425,48 @@ export default class XFDFImporterPlugin extends Plugin {
 				const newAnnotationsForTitle = allNewAnnotations[titleText] || [];
 				const newIds = new Set(newAnnotationsForTitle.map(a => a.uniqueId));
 
-				// 收集这个标题下的所有旧注释，并智能处理
+				// 收集这个2级标题下的所有内容，直到遇到下一个同级或更高级标题
 				while (currentLineIndex < originalLines.length) {
 					const peekLine = originalLines[currentLineIndex];
-					const nextTitleMatch = peekLine.trim().match(/^(#+)\s+(.*)/);
-					if (nextTitleMatch && nextTitleMatch[1].length <= titleMatch[1].length) {
-						break; // 遇到同级或更高级标题，停止
+					const peekTrimmed = peekLine.trim();
+					
+					// 检查是否遇到标题（任何层级）
+					const nextTitleMatch = peekTrimmed.match(/^(#+)\s+(.*)/);
+					if (nextTitleMatch) {
+						// 如果是同级（2级）或更高级（1级）标题，停止
+						if (nextTitleMatch[1].length <= 2) {
+							break;
+						}
+						// 如果是更低级（3级及以上）标题，继续处理
 					}
 
 					const oldId = getIdFromLine(peekLine);
-					
+
+					// 在处理现有注释时使用更精确的比较
+					// 在处理现有注释的部分，使用简单的字符串比较
 					if (oldId && newIds.has(oldId)) {
 						const newAnnotation = newAnnotationsForTitle.find(a => a.uniqueId === oldId);
 						if (newAnnotation) {
-							// 1. 提取新旧两行中的“核心链接部分”
-							// 使用正则表达式匹配 `- [任何内容](任何链接) <!-- ID -->` 的结构
-							const coreLinkRegex = /^- \[.*?\]\(.*?\) <!--\s*.+?\s*-->\s*(\[tag::.*?\])?$/;
+							// 简单比较：检查旧行是否包含新链接的关键信息
+							const hasPdfLinkChanged = !peekLine.includes(newAnnotation.page.toString()) || 
+													!peekLine.includes(newAnnotation.uniqueId);
 							
-							const oldCoreLink = peekLine.match(coreLinkRegex)?.[0] || "";
-							const newCoreLink = `- ${newAnnotation.obsidianLink} <!--${newAnnotation.uniqueId} -->[tag:: ]`;
-
-							// 2. 比较核心部分是否一致
-							if (oldCoreLink === newCoreLink) {
-								// 核心链接完全一样，说明用户没改过链接本身，直接保留整行（包括用户添加的标签等）
-								finalContentLines.push(peekLine);
+							if (hasPdfLinkChanged) {
+								// 链接有变化，更新
+								finalContentLines.push(`- ${newAnnotation.obsidianLink} <!--${newAnnotation.uniqueId} -->[tag:: ]`);
+								totalUpdatedAnnotations++;
 							} else {
-								// 核心链接不一样了（可能是页码变了，或者内容变了），用新的标准链接替换
-								finalContentLines.push(newCoreLink);
+								// 链接没变化，保留原行
+								finalContentLines.push(peekLine);
+								totalSkippedAnnotations++;
 							}
 						}
 						currentLineIndex++;
 					} else {
-						// 【修复】这不是一个已知的注释行，也不是新标题，所以是用户自定义内容，直接保留
 						finalContentLines.push(peekLine);
-						currentLineIndex++; // 保留了用户行，索引前进
+						currentLineIndex++;
 					}
 				}
-
 
 				// 最后，添加所有在XFDF中存在、但在旧文件中没有的全新注释
 				const processedIds = new Set<string>();
@@ -461,37 +478,63 @@ export default class XFDFImporterPlugin extends Plugin {
 
 				for (const newAnnot of newAnnotationsForTitle) {
 					if (!processedIds.has(newAnnot.uniqueId)) {
-						finalContentLines.push(`- ${newAnnot.obsidianLink} <!-- ${newAnnot.uniqueId} -->[tag:: ]`);
+						finalContentLines.push(`- ${newAnnot.obsidianLink} <!--${newAnnot.uniqueId} -->[tag:: ]`);
+						totalNewAnnotations++; // 【新增】统计新增的注释
 					}
 				}
 
-
 			} else {
-				// 如果不是标题，直接将该行加入最终内容
+				// 如果不是2级标题，直接将该行加入最终内容
 				finalContentLines.push(line);
 				currentLineIndex++;
 			}
 		}
 
-		// 4. 处理所有没有找到对应标题的“孤儿”注释，并为它们创建新标题
+		// 4. 处理所有没有找到对应标题的"孤儿"注释，并为它们创建新标题
 		const orphanTitles = Object.keys(allNewAnnotations).filter(title => !processedTitles.has(title));
 
 		if (orphanTitles.length > 0) {
 			finalContentLines.push('\n\n---\n');
 			for (const docTitle of orphanTitles) {
-				finalContentLines.push(`\n## ${docTitle}\n`);
-				const newAnnotationLines = allNewAnnotations[docTitle].map(annot => 
-					`- ${annot.obsidianLink} <!-- ${annot.uniqueId} -->[tag:: ]`
-				);
+				const headerPrefix = '#'.repeat(this.settings.headerLevel);
+				finalContentLines.push(`\n${headerPrefix} ${docTitle}\n`);
+				const newAnnotationLines = allNewAnnotations[docTitle].map(annot => {
+					totalNewAnnotations++; // 【新增】统计新增的注释
+					return `- ${annot.obsidianLink} <!-- ${annot.uniqueId} -->[tag:: ]`;
+				});
 				finalContentLines.push(...newAnnotationLines);
 			}
 		}
 
-		// 5. 写入文件
-		await this.app.vault.modify(targetFileObj, finalContentLines.join('\n').trim());
-		new Notice('XFDF annotations imported successfully!');
+		// 5. 【新增】生成统计信息并显示相应提示
+		const totalChanges = totalNewAnnotations + totalUpdatedAnnotations;
 		
+		if (totalChanges === 0) {
+			new Notice('XFDF annotations: No changes detected');
+		} else {
+			let message = `XFDF annotations imported successfully! `;
+			const changes = [];
+			
+			if (totalNewAnnotations > 0) {
+				changes.push(`+${totalNewAnnotations} new`);
+			}
+			if (totalUpdatedAnnotations > 0) {
+				changes.push(`↑${totalUpdatedAnnotations} updated`);
+			}
+			if (totalSkippedAnnotations > 0) {
+				changes.push(`○${totalSkippedAnnotations} unchanged`);
+			}
+			
+			message += changes.join(', ');
+			new Notice(message);
+		}
+
+		// 6. 写入文件（仅在有变化时）
+		if (totalChanges > 0) {
+			await this.app.vault.modify(targetFileObj, finalContentLines.join('\n').trim());
+		}
 	}
+
 
 }
 // --- 设置页面的代码 ---
@@ -518,6 +561,7 @@ class XFDFImporterSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		// 重新添加这个设置
 		new Setting(containerEl)
 			.setName('Target Markdown File')
 			.setDesc('The markdown file to import annotations into.')
@@ -528,6 +572,21 @@ class XFDFImporterSettingTab extends PluginSettingTab {
 					this.plugin.settings.targetFile = value;
 					await this.plugin.saveSettings();
 				}));
+
+		new Setting(containerEl)
+			.setName('Annotation Header Level')
+			.setDesc('The header level for automatically generated annotation titles.')
+			.addDropdown(dropdown => {
+				dropdown
+					.addOption('1', 'Level 1 (#)')
+					.addOption('2', 'Level 2 (##)')
+					.addOption('3', 'Level 3 (###)')
+					.setValue(this.plugin.settings.headerLevel.toString())
+					.onChange(async (value) => {
+						this.plugin.settings.headerLevel = parseInt(value);
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }
 
