@@ -8,12 +8,26 @@ interface XFDFImporterSettings {
 
 const DEFAULT_SETTINGS: XFDFImporterSettings = {
 	xfdfFolder: 'PDFxchangeAnnot',
-	targetFile: '快速笔记/Annotation.md'
+	targetFile: 'PDFxchangeAnnot/PXCEAnnotation.md'
 }
 
 export default class XFDFImporterPlugin extends Plugin {
 	settings: XFDFImporterSettings;
-
+	// 在 XFDFImporterPlugin 类中添加这个递归搜索函数
+	private async findXfdfFiles(folder: TFolder): Promise<TFile[]> {
+		let xfdfFiles: TFile[] = [];
+		
+		for (const child of folder.children) {
+			if (child instanceof TFile && child.extension === 'xfdf') {
+				xfdfFiles.push(child);
+			} else if (child instanceof TFolder) {
+				// 递归搜索子文件夹
+				xfdfFiles = xfdfFiles.concat(await this.findXfdfFiles(child));
+			}
+		}
+		
+		return xfdfFiles;
+	}
 	async onload() {
 		await this.loadSettings();
 
@@ -121,6 +135,125 @@ export default class XFDFImporterPlugin extends Plugin {
 	}
 
 
+	private async generatePdfInternalLink(xfdfFile: TFile, pageNum: number, rect?: string, color?: string): Promise<string> {
+		try {
+			// 读取XFDF文件内容
+			// 读取XFDF文件内容
+			const content = await this.app.vault.read(xfdfFile);
+			const parser = new DOMParser();
+			const xmlDoc = parser.parseFromString(content, "text/xml");
+
+			// 【修复】使用 getElementsByTagName 替代 querySelector
+			const fElements = xmlDoc.getElementsByTagName("f");
+			let pdfFileElement: Element | null = null;
+			
+			// 查找带有 href 属性的 f 元素
+			for (let i = 0; i < fElements.length; i++) {
+				const element = fElements[i];
+				if (element.getAttribute("href")) {
+					pdfFileElement = element;
+					break;
+				}
+			}
+			
+			if (!pdfFileElement) {
+				console.warn("No PDF path found in XFDF file:", xfdfFile.path);
+				return "";
+			}
+			let finalPdfPath: string;
+			let pdfPath = pdfFileElement.getAttribute("href") || "";
+			if (!pdfPath) {
+				console.warn("Empty PDF path in XFDF file:", xfdfFile.path);
+				return "";
+			}
+			
+			else if (/^[A-Za-z]:/.test(pdfPath)) {
+				// 处理 G:/... 格式
+				finalPdfPath = pdfPath.replace(/\//g, '\\');
+			}
+			else if (pdfPath.startsWith('./') || pdfPath.startsWith('../') || !pdfPath.includes(':')) {
+				// 处理相对路径格式
+				const { join } = require('path');
+				
+				const adapter = this.app.vault.adapter;
+				if (adapter instanceof FileSystemAdapter) {
+					const vaultBasePath = adapter.getBasePath();
+					const xfdfDirPath = xfdfFile.path.substring(0, xfdfFile.path.lastIndexOf('/'));
+					let absolutePath = join(vaultBasePath, xfdfDirPath, pdfPath);
+					finalPdfPath = absolutePath.replace(/\//g, '\\');
+				} else {
+					new Notice("Cannot resolve relative path: vault is not using file system adapter");
+					return "";
+				}
+			}
+			else {
+				new Notice(`Unsupported PDF path format:"${pdfPath}"`);
+				
+				return "";
+			}
+
+			// 【改进】更智能的路径匹配策略
+			const adapter = this.app.vault.adapter;
+			if (adapter instanceof FileSystemAdapter) {
+				const vaultBasePath = adapter.getBasePath().replace(/\\/g, '/');
+				const normalizedPdfPath = finalPdfPath.replace(/\\/g, '/');
+				
+				// 策略1：检查PDF路径是否以vault基础路径开头
+				if (normalizedPdfPath.startsWith(vaultBasePath + '/') || normalizedPdfPath === vaultBasePath) {
+					// PDF在库内，使用相对路径
+					const relativePath = normalizedPdfPath.substring(vaultBasePath.length + 1);
+					finalPdfPath = relativePath;
+				} else {
+					// 策略2：PDF不在库内，但文件夹/文件名结构在库内存在
+					//let thispath = normalizedPdfPath.replace(/ /g, "%20");
+					const pdfPathParts = normalizedPdfPath.split('/');
+					
+					// 从最深层级开始，逐步向上查找匹配的 库内文件夹/文件名
+					// 【简化】直接取最后两层：文件夹/文件名
+					if (pdfPathParts.length >= 2) {
+						const lastFolder = pdfPathParts[pdfPathParts.length - 2]; // 倒数第二层：文件夹名
+						const fileName = pdfPathParts[pdfPathParts.length - 1]; // 最后一层：文件名
+						const candidatePath = `${lastFolder}/${fileName}`; // 如：02%20系统解剖学/第11章%20%20心血管系统.pdf
+						
+						// 遍历库内所有PDF文件，查找路径结尾匹配的文件
+						const allPdfFiles = this.app.vault.getFiles().filter(file => file.extension === 'pdf');
+						
+						for (const pdfFile of allPdfFiles) {
+							//new Notice(`${pdfFile.path}`);
+							// 检查库内文件的路径是否以 candidatePath 结尾
+							if (pdfFile.path.endsWith(candidatePath)) {
+								// 找到匹配的库内PDF文件，使用完整的库内路径
+								finalPdfPath = pdfFile.path;
+								console.log(`Found matching PDF in vault: ${pdfFile.path}`);
+								break;
+							}
+						}
+					}
+				}
+			}
+
+
+			// 提取文件名用于显示
+			//const pdfFileName = finalPdfPath.split('\\').pop() || finalPdfPath.split('/').pop() || "PDF";
+			finalPdfPath = finalPdfPath.replace(/ /g, "%20")
+			// 构建PDF内部链接
+			let pdfLink = `${finalPdfPath}#page=${pageNum}`;
+			
+			// 如果有坐标信息，添加到链接中
+			if (rect) {
+				pdfLink += `&rect=${rect}`;
+			}
+			if (color && color !== 'undefined') {
+				pdfLink += `&color=${color}`;
+			}
+			
+			return pdfLink;
+			
+		} catch (error) {
+			new Notice("Failed to generate PDF internal link:", error);
+			return "";
+		}
+	}
 
 
 	// 5. 【核心移植】解析 XFDF 字符串为快照行 (使用 DOMParser 版本)
@@ -193,34 +326,37 @@ export default class XFDFImporterPlugin extends Plugin {
 			new Notice(`Error: XFDF folder "${xfdfFolder}" not found.`);
 			return;
 		}
-		const xfdfFiles = xfdfFolderAbstractFile.children
-			.filter((f): f is TFile => f instanceof TFile)
-			.map(f => f.name)
-			.filter(name => name.endsWith('.xfdf'));
+		// 使用新的递归搜索方法
+    	const xfdfFiles = await this.findXfdfFiles(xfdfFolderAbstractFile);
 
 		for (const file of xfdfFiles) {
-			const xfdfFile = this.app.vault.getAbstractFileByPath(`${xfdfFolder}/${file}`) as TFile;
-			if (!xfdfFile) continue;
-			const xfdfString = await this.app.vault.read(xfdfFile);
-			const docTitle = file.replace(/\.xfdf$/, '');
+			// file 现在是 TFile 对象，不需要再次获取
+			if (!file) continue;
+			const xfdfString = await this.app.vault.read(file);
+			
+			// 使用 file.path 获取完整路径，然后提取文件名
+			const fileName = file.name;
+			const docTitle = fileName.replace(/\.xfdf$/, '');
 
 			const snapshotLines = this.parseXFDFToSnapshot(xfdfString);
 			if (snapshotLines.length === 0) {
 				continue;
 			}
 
-			// 新增：将快照行转换为注释对象
-			const annotations = snapshotLines.map(line => {
+			// 先收集所有需要处理的注释
+			const annotationPromises = snapshotLines.map(async (line) => {
 				const [type, contents, rect, color, subject, name, page] = line.split('|');
 				const uniqueId = name || `${docTitle}-${Date.now()}`;
-				const pageNum = (page ? parseInt(page, 10) : 1); // 使用上面解构出来的 page 变量，已经加1了
+				const pageNum = (page ? parseInt(page, 10) : 1);
 
-				
 				// 生成 pxce 链接
-				const pxceLink = this.generatePxceLink(file, pageNum, uniqueId);
+				const pxceLink = this.generatePxceLink(fileName, pageNum, uniqueId);
 
-				// 生成 Obsidian 链接
-				const obsidianLink = `${type}: ${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pxceLink})`;
+				// 异步生成PDF内部链接
+				const pdfInternalLink = await this.generatePdfInternalLink(file, pageNum, rect, color);
+
+				// 生成 Obsidian 链接，包含两个链接
+				const obsidianLink = `${type}:${contents || '查看注释'} [${docTitle}：第${pageNum}页](${pdfInternalLink}) [pxceLink](${pxceLink})`;
 
 				return {
 					uniqueId,
@@ -234,6 +370,10 @@ export default class XFDFImporterPlugin extends Plugin {
 					page: pageNum
 				};
 			});
+
+			// 等待所有异步操作完成
+			const annotations = await Promise.all(annotationPromises);
+
 
 			// 存储到 allNewAnnotations
 			if (!allNewAnnotations[docTitle]) {
